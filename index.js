@@ -5,7 +5,7 @@ async function handleRequest(request, env) {
 
   // Redirect to GitHub repo for documentation
   if (request.method === 'GET') {
-    return Response.redirect('https://github.com/tiennnm99/miti-loki', 302);
+    return Response.redirect('https://github.com/tiennm99/miti-loki', 302);
   }
 
   // Only handle POST requests
@@ -29,11 +29,11 @@ async function handleRequest(request, env) {
   }
 
   try {
-    // Read the request body as plain text
-    const message = await request.text();
+    // Read and parse the request body
+    const body = await request.text();
 
     // Validate that body is not empty
-    if (!message) {
+    if (!body) {
       return new Response('Request body is required', {
         status: 400,
         headers: {
@@ -42,22 +42,87 @@ async function handleRequest(request, env) {
       });
     }
 
+    // Parse JSON body
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch (parseError) {
+      return new Response(`Invalid JSON: ${parseError.message}`, {
+        status: 400,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+        }
+      });
+    }
+
+    // Convert single object to array
+    const logs = Array.isArray(data) ? data : [data];
+
+    // Validate and build log values array
+    const values = [];
+    for (const entry of logs) {
+      // Validate message field is present
+      if (!entry.message) {
+        return new Response('Each log entry must have a "message" field', {
+          status: 400,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+          }
+        });
+      }
+
+      // Get timestamp (use provided or current time in nanoseconds)
+      const timestamp = entry.timestamp || (Date.now() * 1000000).toString();
+
+      // Validate and process metadata if present
+      if (entry.metadata) {
+        // Check that metadata is an object
+        if (typeof entry.metadata !== 'object' || Array.isArray(entry.metadata)) {
+          return new Response('Metadata must be an object', {
+            status: 400,
+            headers: {
+              'Access-Control-Allow-Origin': '*',
+            }
+          });
+        }
+
+        // Validate metadata is flat (no nested objects)
+        for (const [key, value] of Object.entries(entry.metadata)) {
+          if (typeof value === 'object' && value !== null) {
+            return new Response(`Metadata field "${key}" contains nested object. Only flat key-value pairs are allowed.`, {
+              status: 400,
+              headers: {
+                'Access-Control-Allow-Origin': '*',
+              }
+            });
+          }
+        }
+
+        // Include metadata if it has properties
+        if (Object.keys(entry.metadata).length > 0) {
+          values.push([timestamp.toString(), entry.message, entry.metadata]);
+        } else {
+          values.push([timestamp.toString(), entry.message]);
+        }
+      } else {
+        values.push([timestamp.toString(), entry.message]);
+      }
+    }
+
     // Get client IP from Cloudflare headers
     const clientIP = request.headers.get('CF-Connecting-IP') ||
                      request.headers.get('X-Forwarded-For') ||
                      'unknown';
 
-    // Create Loki payload from plain text message
+    // Create Loki payload
     const lokiPayload = {
       streams: [
         {
           stream: {
-            source: 'miti-loki',
+            proxy: 'miti-loki',
             ip: clientIP
           },
-          values: [
-            [(Date.now() * 1000000).toString(), message]
-          ]
+          values: values
         }
       ]
     };
