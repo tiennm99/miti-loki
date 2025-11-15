@@ -42,9 +42,9 @@ async function handleRequest(request, env) {
       });
     }
 
-    // Validate JSON format
+    let jsonBody;
     try {
-      const jsonBody = JSON.parse(body);
+      jsonBody = JSON.parse(body);
       if (!jsonBody.streams || !Array.isArray(jsonBody.streams)) {
         return new Response('Invalid format: "streams" array is required', {
           status: 400,
@@ -62,6 +62,13 @@ async function handleRequest(request, env) {
       });
     }
 
+    jsonBody.streams.forEach(stream => {
+      if (!stream.stream) {
+        stream.stream = {};
+      }
+      stream.stream.source = 'miti-loki';
+    });
+
     // Construct Loki URL
     const lokiPort = env.LOKI_PORT || '443';
     const protocol = lokiPort === '443' ? 'https' : 'http';
@@ -77,7 +84,7 @@ async function handleRequest(request, env) {
         'Content-Type': 'application/json',
         'Authorization': `Basic ${auth}`,
       },
-      body: body,
+      body: JSON.stringify(jsonBody),
     });
 
     // Get response text
