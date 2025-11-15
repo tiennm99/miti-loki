@@ -29,11 +29,11 @@ async function handleRequest(request, env) {
   }
 
   try {
-    // Read the request body
-    const body = await request.text();
+    // Read the request body as plain text
+    const message = await request.text();
 
     // Validate that body is not empty
-    if (!body) {
+    if (!message) {
       return new Response('Request body is required', {
         status: 400,
         headers: {
@@ -42,32 +42,19 @@ async function handleRequest(request, env) {
       });
     }
 
-    let jsonBody;
-    try {
-      jsonBody = JSON.parse(body);
-      if (!jsonBody.streams || !Array.isArray(jsonBody.streams)) {
-        return new Response('Invalid format: "streams" array is required', {
-          status: 400,
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-          }
-        });
-      }
-    } catch (parseError) {
-      return new Response(`Invalid JSON: ${parseError.message}`, {
-        status: 400,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
+    // Create Loki payload from plain text message
+    const lokiPayload = {
+      streams: [
+        {
+          stream: {
+            source: 'miti-loki'
+          },
+          values: [
+            [(Date.now() * 1000000).toString(), message]
+          ]
         }
-      });
-    }
-
-    jsonBody.streams.forEach(stream => {
-      if (!stream.stream) {
-        stream.stream = {};
-      }
-      stream.stream.source = 'miti-loki';
-    });
+      ]
+    };
 
     // Construct Loki URL
     const lokiPort = env.LOKI_PORT || '443';
@@ -84,7 +71,7 @@ async function handleRequest(request, env) {
         'Content-Type': 'application/json',
         'Authorization': `Basic ${auth}`,
       },
-      body: JSON.stringify(jsonBody),
+      body: JSON.stringify(lokiPayload),
     });
 
     // Get response text
