@@ -42,12 +42,18 @@ async function handleRequest(request, env) {
       });
     }
 
+    // Get client IP from Cloudflare headers
+    const clientIP = request.headers.get('CF-Connecting-IP') ||
+                     request.headers.get('X-Forwarded-For') ||
+                     'unknown';
+
     // Create Loki payload from plain text message
     const lokiPayload = {
       streams: [
         {
           stream: {
-            source: 'miti-loki'
+            source: 'miti-loki',
+            ip: clientIP
           },
           values: [
             [(Date.now() * 1000000).toString(), message]
