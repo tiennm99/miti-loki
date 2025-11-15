@@ -1,5 +1,21 @@
 // Cloudflare Worker to forward logs to Grafana Cloud Loki
 
+// Validate label name according to Loki/Prometheus rules
+// https://grafana.com/docs/loki/latest/get-started/labels/#label-format
+function validateLabelName(name) {
+  // Check if it matches [a-zA-Z_:][a-zA-Z0-9_:]*
+  if (!/^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(name)) {
+    return false;
+  }
+
+  // Reject labels that start and end with double underscores (reserved for internal use)
+  if (name.startsWith('_') && name.endsWith('_')) {
+    return false;
+  }
+
+  return true;
+}
+
 async function handleRequest(request, env) {
   const url = new URL(request.url);
 
@@ -114,14 +130,29 @@ async function handleRequest(request, env) {
                      request.headers.get('X-Forwarded-For') ||
                      'unknown';
 
+    // Build stream labels from URL parameters
+    const stream = {};
+    for (const [key, value] of url.searchParams.entries()) {
+      if (!validateLabelName(key)) {
+        return new Response(`Invalid label name "${key}". Label names must match [a-zA-Z_:][a-zA-Z0-9_:]* and cannot start and end with double underscores.`, {
+          status: 400,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+          }
+        });
+      }
+      stream[key] = value;
+    }
+
+    // Add/overwrite proxy and ip labels
+    stream.proxy = 'miti-loki';
+    stream.ip = clientIP;
+
     // Create Loki payload
     const lokiPayload = {
       streams: [
         {
-          stream: {
-            proxy: 'miti-loki',
-            ip: clientIP
-          },
+          stream: stream,
           values: values
         }
       ]
@@ -146,6 +177,7 @@ async function handleRequest(request, env) {
     });
 
     // Get response text
+    // https://grafana.com/docs/loki/latest/reference/loki-http-api/#ingest-logs
     const responseText = await lokiResponse.text();
 
     // Return the response from Loki with CORS headers
