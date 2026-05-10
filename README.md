@@ -28,16 +28,40 @@ Each entry is `{message, timestamp?, metadata?}`:
 
 - `message` (string, required) — log line.
 - `timestamp` (string, optional) — Unix nanoseconds. Defaults to current time.
-- `metadata` (object, optional) — flat key-value pairs (no nested objects). Forwarded as Loki structured metadata.
+- `metadata` (object, optional) — flat key-value pairs (no nested objects). Merged ON TOP of auto-injected metadata; caller wins on key collision.
 
 ### Stream labels
 
 URL query params become Loki stream labels. Label names must match `[a-zA-Z_:][a-zA-Z0-9_:]*` and cannot both start and end with `_` (reserved). Invalid labels return 400.
 
-Two labels are auto-injected (overwriting any caller-supplied values):
+Auto-injected labels (overwrite caller-supplied values on collision):
 
 - `proxy=miti-loki`
-- `ip=<client-ip>` (from `CF-Connecting-IP` / `X-Forwarded-For`)
+- `country` — from `request.cf.country` (`unknown` if absent)
+- `region` — from `request.cf.region` (`unknown` if absent)
+- `timezone` — from `request.cf.timezone` (`unknown` if absent)
+
+> **Breaking change (v2):** `ip` was previously a stream label. It is now per-entry structured metadata (see below). Rewrite `{ip="..."}` queries as `{proxy="miti-loki"} | ip="..."`.
+
+### Auto-injected per-entry metadata
+
+Every log entry is enriched with these structured-metadata fields. Caller-supplied `metadata.<key>` wins on collision; missing values become string `"unknown"`.
+
+- `ip` — from `CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP`
+- `user_agent` — `User-Agent` header
+- `city` — `request.cf.city`
+- `latitude`, `longitude` — `request.cf.latitude` / `.longitude`
+- `url` — full request URL (incl. query string)
+- `cf_ray` — `CF-Ray` header (per-request trace ID for CF support)
+- `referer` — `Referer` header
+
+### LogQL examples
+
+```logql
+{proxy="miti-loki", country="VN"}                 # filter by low-cardinality label
+{proxy="miti-loki"} | ip="1.2.3.4"                # filter by structured metadata
+{proxy="miti-loki", app="demo"} | user_agent=~"curl/.*"
+```
 
 ### Errors
 

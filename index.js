@@ -16,6 +16,36 @@ function validateLabelName(name) {
   return true;
 }
 
+// Low-cardinality CF-derived fields → stream labels.
+// Caller-supplied params with these names are overwritten by spread in handleRequest.
+function collectAutoLabels(request) {
+  return {
+    proxy: 'miti-loki',
+    country: request.cf?.country || 'unknown',
+    region: request.cf?.region || 'unknown',
+    timezone: request.cf?.timezone || 'unknown',
+  };
+}
+
+// High-cardinality fields → per-entry structured metadata.
+// All values coerced to strings (Loki structured metadata requires string scalars).
+function collectAutoMetadata(request) {
+  const ip = request.headers.get('CF-Connecting-IP') ||
+             request.headers.get('X-Forwarded-For') ||
+             request.headers.get('X-Real-IP') ||
+             'unknown';
+  return {
+    ip,
+    user_agent: request.headers.get('User-Agent') || 'unknown',
+    city: request.cf?.city || 'unknown',
+    latitude: String(request.cf?.latitude ?? 'unknown'),
+    longitude: String(request.cf?.longitude ?? 'unknown'),
+    url: request.url || 'unknown',
+    cf_ray: request.headers.get('CF-Ray') || 'unknown',
+    referer: request.headers.get('Referer') || 'unknown',
+  };
+}
+
 async function handleRequest(request, env) {
   const url = new URL(request.url);
 
@@ -74,6 +104,9 @@ async function handleRequest(request, env) {
     // Convert single object to array
     const logs = Array.isArray(data) ? data : [data];
 
+    // Build auto-injected metadata once per request — same for every entry in a batch.
+    const autoMeta = collectAutoMetadata(request);
+
     // Validate and build log values array
     const values = [];
     for (const entry of logs) {
@@ -90,9 +123,9 @@ async function handleRequest(request, env) {
       // Get timestamp (use provided or current time in nanoseconds)
       const timestamp = entry.timestamp || (Date.now() * 1000000).toString();
 
-      // Validate and process metadata if present
+      // Validate caller-supplied metadata if present
+      let callerMeta = {};
       if (entry.metadata) {
-        // Check that metadata is an object
         if (typeof entry.metadata !== 'object' || Array.isArray(entry.metadata)) {
           return new Response('Metadata must be an object', {
             status: 400,
@@ -101,8 +134,6 @@ async function handleRequest(request, env) {
             }
           });
         }
-
-        // Validate metadata is flat (no nested objects)
         for (const [key, value] of Object.entries(entry.metadata)) {
           if (typeof value === 'object' && value !== null) {
             return new Response(`Metadata field "${key}" contains nested object. Only flat key-value pairs are allowed.`, {
@@ -113,24 +144,15 @@ async function handleRequest(request, env) {
             });
           }
         }
-
-        // Include metadata if it has properties
-        if (Object.keys(entry.metadata).length > 0) {
-          values.push([timestamp.toString(), entry.message, entry.metadata]);
-        } else {
-          values.push([timestamp.toString(), entry.message]);
-        }
-      } else {
-        values.push([timestamp.toString(), entry.message]);
+        callerMeta = entry.metadata;
       }
+
+      // Caller metadata wins on key collision with auto-injected metadata.
+      const entryMetadata = { ...autoMeta, ...callerMeta };
+      values.push([timestamp.toString(), entry.message, entryMetadata]);
     }
 
-    // Get client IP from Cloudflare headers
-    const clientIP = request.headers.get('CF-Connecting-IP') ||
-                     request.headers.get('X-Forwarded-For') ||
-                     'unknown';
-
-    // Build stream labels from URL parameters
+    // Build stream labels: caller-supplied first, auto-injected last (auto wins).
     const stream = {};
     for (const [key, value] of url.searchParams.entries()) {
       if (!validateLabelName(key)) {
@@ -143,10 +165,7 @@ async function handleRequest(request, env) {
       }
       stream[key] = value;
     }
-
-    // Add/overwrite proxy and ip labels
-    stream.proxy = 'miti-loki';
-    stream.ip = clientIP;
+    Object.assign(stream, collectAutoLabels(request));
 
     // Create Loki payload
     const lokiPayload = {
